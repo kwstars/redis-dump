@@ -169,28 +169,15 @@ func (r *Redis) DUMP(db int, keys []string) (data map[string][]byte, err error) 
 func (r *Redis) RESTORE(db int, data map[string][]byte) (err error) {
 	var conn = r.pool.Get()
 	defer conn.Close()
-	tmp := make([]string, 0, len(data))
 	if err = conn.Send("SELECT", db); err != nil {
 		return errors.WithStack(err)
 	}
 
 	for k, v := range data {
 		// 0是ttl
-		tmp = append(tmp, k)
-		if err := conn.Send("RESTORE", k, 0, v); err != nil {
-			return errors.Errorf("%s: %v", k, err)
+		if _, err := conn.Do("RESTORE", k, 0, v); err != nil {
+			log.Printf("%s: %v", k, err)
 		}
 	}
-
-	if err = conn.Flush(); err != nil {
-		return errors.WithStack(err)
-	}
-
-	for i := 0; i < len(data); i++ {
-		if _, err := conn.Receive(); err != nil {
-			return errors.Errorf("%s: %v", tmp[i], err)
-		}
-	}
-
-	return nil
+	return
 }
