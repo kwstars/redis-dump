@@ -18,8 +18,14 @@ package cmd
 import (
 	"context"
 	"github.com/kwstars/redis-dump/internal/myredis"
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"log"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
 )
 
 // migrateCmd represents the migrate command
@@ -31,22 +37,48 @@ and usage of using your command. For example:
 Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
+	ValidArgs: []string{"source", "dest"},
 	Args: func(cmd *cobra.Command, args []string) error {
-		//strs := []string{"source","dest"}
-		//fmt.Println(cmd.Flags().SortFlags)
-		//for _, v := range strs {
-		//	fmt.Println(v)
-		//}
+		if !cmd.Flag("source").Changed && !cmd.Flag("dest").Changed {
+			return cmd.Usage()
+		}
+
+		for _, c := range []string{"source", "dest"} {
+			flag := cmd.Flag(c)
+			var command string
+			if flag.Changed {
+				command = flag.Value.String()
+			} else {
+				command = flag.DefValue
+			}
+
+			command = strings.Join([]string{"redis://", command}, "")
+
+			if _, err := url.Parse(command); err != nil {
+				return cmd.Usage()
+			}
+		}
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		sRedis, cf1, err1 := myredis.NewRedis("127.0.0.1", "6379", "123456")
+		sIP, sPort, sPassword, sDB, err := getParameter(cmd.Flag("source"))
+		if err != nil {
+			log.Printf("%+v\n", err)
+			return
+		}
+		dIP, dPort, dPassword, dDB, err := getParameter(cmd.Flag("dest"))
+		if err != nil {
+			log.Printf("%+v\n", err)
+			return
+		}
+
+		sRedis, cf1, err1 := myredis.NewRedis(sIP, sPort, sPassword)
 		if err1 != nil {
 			log.Println(err1)
 			return
 		}
 		defer cf1()
-		dRedis, cf2, err2 := myredis.NewRedis("127.0.0.1", "6379", "123456")
+		dRedis, cf2, err2 := myredis.NewRedis(dIP, dPort, dPassword)
 		if err2 != nil {
 			log.Println(err2)
 			return
@@ -55,18 +87,18 @@ to quickly create a Cobra application.`,
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		for v := range sRedis.Scan(ctx, 1, "*", 1000) {
+		for v := range sRedis.Scan(ctx, sDB, "*", 1000) {
 			if v.Err != nil {
 				log.Printf("%+v", v.Err)
 				return
 			}
-			data, err := sRedis.DUMP(1, v.Data)
+			data, err := sRedis.DUMP(sDB, v.Data)
 			if err != nil {
-				log.Printf("%+v", err)
+				log.Printf("%+v\n", err)
 				return
 			}
-			if err := dRedis.RESTORE(11, data); err != nil {
-				log.Println(err)
+			if err := dRedis.RESTORE(dDB, data); err != nil {
+				log.Printf("%v\n", err)
 			}
 		}
 	},
@@ -74,7 +106,7 @@ to quickly create a Cobra application.`,
 
 func init() {
 	rootCmd.AddCommand(migrateCmd)
-
+	migrateCmd.Flags().SortFlags = false
 	// Here you will define your flags and configuration settings.
 
 	// Cobra supports Persistent Flags which will work for this command
@@ -84,7 +116,35 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	//migrateCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	migrateCmd.PersistentFlags().String("source", "", "[:password@]host[:port][/database] (required)")
+	migrateCmd.PersistentFlags().String("dest", "", "[:password@]host[:port][/database] (required)")
+	migrateCmd.MarkPersistentFlagRequired("source")
+	migrateCmd.MarkPersistentFlagRequired("dest")
+}
 
-	migrateCmd.PersistentFlags().String("source", "127.0.0.1:6379/0", "[:password@]host[:port][/database]")
-	migrateCmd.PersistentFlags().String("dest", "127.0.0.1:6379/0", "[:password@]host[:port][/database]")
+func getParameter(flag *pflag.Flag) (ip, port, password string, db int, err error) {
+	var command string
+	if flag.Changed {
+		command = flag.Value.String()
+	} else {
+		command = flag.DefValue
+	}
+	command = strings.Join([]string{"redis://", command}, "")
+
+	url, _ := url.Parse(command)
+
+	ip, port, err = net.SplitHostPort(url.Host)
+	if err != nil {
+		return "", "", "", 0, errors.Errorf("splitHostPort: %v", err)
+	}
+
+	password, _ = url.User.Password()
+
+	dbString := strings.TrimPrefix(url.Path, "/")
+	db, err = strconv.Atoi(dbString)
+	if err != nil {
+		return "", "", "", 0, errors.Errorf("TrimPrefix: %v", err)
+	}
+
+	return
 }

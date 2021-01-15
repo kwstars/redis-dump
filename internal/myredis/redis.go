@@ -141,10 +141,10 @@ func (r *Redis) DUMP(db int, keys []string) (data map[string][]byte, err error) 
 		return nil, errors.WithStack(err)
 	}
 
-	for _, v := range keys {
-		err := conn.Send("DUMP", v)
+	for _, key := range keys {
+		err := conn.Send("DUMP", key)
 		if err != nil {
-			return nil, errors.WithStack(err)
+			return nil, errors.Errorf("%s: %v", key, err)
 		}
 	}
 
@@ -158,7 +158,7 @@ func (r *Redis) DUMP(db int, keys []string) (data map[string][]byte, err error) 
 
 	for i := 0; i < len(keys); i++ {
 		if b, err := redis.Bytes(conn.Receive()); err != nil {
-			return nil, errors.WithStack(err)
+			return nil, errors.Errorf("%s: %v", keys[i], err)
 		} else {
 			data[keys[i]] = b
 		}
@@ -169,15 +169,16 @@ func (r *Redis) DUMP(db int, keys []string) (data map[string][]byte, err error) 
 func (r *Redis) RESTORE(db int, data map[string][]byte) (err error) {
 	var conn = r.pool.Get()
 	defer conn.Close()
-
+	tmp := make([]string, 0, len(data))
 	if err = conn.Send("SELECT", db); err != nil {
 		return errors.WithStack(err)
 	}
 
 	for k, v := range data {
 		// 0是ttl
+		tmp = append(tmp, k)
 		if err := conn.Send("RESTORE", k, 0, v); err != nil {
-			return errors.WithStack(err)
+			return errors.Errorf("%s: %v", k, err)
 		}
 	}
 
@@ -187,7 +188,7 @@ func (r *Redis) RESTORE(db int, data map[string][]byte) (err error) {
 
 	for i := 0; i < len(data); i++ {
 		if _, err := conn.Receive(); err != nil {
-			return errors.WithStack(err)
+			return errors.Errorf("%s: %v", tmp[i], err)
 		}
 	}
 
