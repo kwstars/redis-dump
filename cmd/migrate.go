@@ -26,6 +26,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // migrateCmd represents the migrate command
@@ -72,35 +73,46 @@ to quickly create a Cobra application.`,
 			return
 		}
 
-		sRedis, cf1, err1 := myredis.NewRedis(sIP, sPort, sPassword)
+		sRedis, cf1, err1 := myredis.NewRedis(sIP, sPort, sPassword, sDB)
 		if err1 != nil {
 			log.Println(err1)
 			return
 		}
 		defer cf1()
-		dRedis, cf2, err2 := myredis.NewRedis(dIP, dPort, dPassword)
+		dRedis, cf2, err2 := myredis.NewRedis(dIP, dPort, dPassword, dDB)
 		if err2 != nil {
 			log.Println(err2)
 			return
 		}
 		defer cf2()
 
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, 20)
+
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		for v := range sRedis.Scan(ctx, sDB, "*", 1000) {
+		for v := range sRedis.Scan(ctx, "*", 1000) {
 			if v.Err != nil {
 				log.Printf("%+v", v.Err)
 				return
 			}
-			data, err := sRedis.DUMP(sDB, v.Data)
-			if err != nil {
-				log.Printf("%+v\n", err)
-				return
-			}
-			if err := dRedis.RESTORE(dDB, data); err != nil {
-				log.Printf("%v\n", err)
-			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(d []string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				data, err := sRedis.DUMP(d)
+				if err != nil {
+					log.Printf("%+v\n", err)
+					return
+				}
+				if err := dRedis.RESTORE(data); err != nil {
+					log.Printf("%v\n", err)
+				}
+			}(v.Data)
 		}
+		wg.Wait()
+		close(sem)
 	},
 }
 

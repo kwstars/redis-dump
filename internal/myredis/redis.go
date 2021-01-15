@@ -13,7 +13,7 @@ type Redis struct {
 	pool *redis.Pool
 }
 
-func NewRedis(ip, port, password string) (r *Redis, cf func(), err error) {
+func NewRedis(ip, port, password string, db int) (r *Redis, cf func(), err error) {
 	var addr = net.JoinHostPort(ip, port)
 
 	r = &Redis{pool: &redis.Pool{
@@ -22,7 +22,7 @@ func NewRedis(ip, port, password string) (r *Redis, cf func(), err error) {
 		IdleTimeout: 240 * time.Second,
 		Wait:        true,
 		Dial: func() (redis.Conn, error) {
-			c, err := redis.Dial("tcp", addr, redis.DialPassword(password))
+			c, err := redis.Dial("tcp", addr, redis.DialPassword(password), redis.DialDatabase(db))
 			if err != nil {
 				return nil, err
 			}
@@ -46,38 +46,29 @@ func NewRedis(ip, port, password string) (r *Redis, cf func(), err error) {
 	return
 }
 
-func (r *Redis) GetConfig(key string) (dbs string, err error) {
+//https://raw.githubusercontent.com/redis/redis/2.8/redis.conf
+func (r *Redis) GetConfig(confKey string) (conf string, err error) {
 	var conn = r.pool.Get()
 	defer conn.Close()
 
-	n, err := redis.StringMap(conn.Do("CONFIG", "GET", key))
+	allConfig, err := redis.StringMap(conn.Do("CONFIG", "GET", confKey))
 	if err != nil {
-		return "", errors.Wrap(err, "Receive")
+		return "", errors.WithStack(err)
+	}
+	resp, ok := allConfig[confKey]
+	if !ok {
+		return "", errors.Errorf("No found confKey: %v", confKey)
 	}
 
-	return n[key], nil
+	return resp, nil
 }
 
-func (r *Redis) GetSETStrings(db int, key string) (data []string, err error) {
+func (r *Redis) GetSETStrings(key string) (data []string, err error) {
 	var conn = r.pool.Get()
 	defer conn.Close()
 
-	if err = conn.Send("SELECT", db); err != nil {
-		return nil, errors.Wrapf(err, "SELECT, db: %d, key: %s", db, key)
-	}
-	if err = conn.Send("SMEMBERS", key); err != nil {
-		return nil, errors.Wrapf(err, "SMEMBERS, db: %d, key: %s", db, key)
-	}
-
-	if err = conn.Flush(); err != nil {
-		return nil, errors.Wrapf(err, "Flush, db: %d, key: %s", db, key)
-	}
-
-	if _, err := conn.Receive(); err != nil {
-		return nil, errors.Wrapf(err, "SELECT, db: %d, key: %s", db, key)
-	}
-	if data, err = redis.Strings(conn.Receive()); err != nil {
-		return nil, errors.Wrapf(err, "SMEMBERS, db: %d, key: %s", db, key)
+	if data, err = redis.Strings(conn.Do("SMEMBERS", key)); err != nil {
+		return nil, errors.WithStack(err)
 	}
 
 	return
@@ -88,16 +79,13 @@ type SCANResult struct {
 	Err  error
 }
 
-func (r *Redis) Scan(ctx context.Context, db int, match string, count int) <-chan SCANResult {
+func (r *Redis) Scan(ctx context.Context, match string, count int) <-chan SCANResult {
 	var results = make(chan SCANResult)
 	go func() {
 		defer close(results)
 
 		var conn = r.pool.Get()
 		defer conn.Close()
-		if err := conn.Send("SELECT", db); err != nil {
-			results <- SCANResult{Data: nil, Err: errors.WithStack(err)}
-		}
 
 		var cursor = 0
 		for {
@@ -118,7 +106,6 @@ func (r *Redis) Scan(ctx context.Context, db int, match string, count int) <-cha
 						results <- SCANResult{Data: nil, Err: errors.WithStack(err)}
 						return
 					}
-
 					results <- SCANResult{Data: v, Err: nil}
 				}
 
@@ -132,46 +119,26 @@ func (r *Redis) Scan(ctx context.Context, db int, match string, count int) <-cha
 	return results
 }
 
-func (r *Redis) DUMP(db int, keys []string) (data map[string][]byte, err error) {
+func (r *Redis) DUMP(keys []string) (data map[string][]byte, err error) {
 	var conn = r.pool.Get()
 	defer conn.Close()
 
 	data = make(map[string][]byte)
-	if err = conn.Send("SELECT", db); err != nil {
-		return nil, errors.WithStack(err)
-	}
 
 	for _, key := range keys {
-		err := conn.Send("DUMP", key)
-		if err != nil {
+		if b, err := redis.Bytes(conn.Do("DUMP", key)); err != nil {
 			return nil, errors.Errorf("%s: %v", key, err)
-		}
-	}
-
-	if err = conn.Flush(); err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	if _, err := conn.Receive(); err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	for i := 0; i < len(keys); i++ {
-		if b, err := redis.Bytes(conn.Receive()); err != nil {
-			return nil, errors.Errorf("%s: %v", keys[i], err)
 		} else {
-			data[keys[i]] = b
+			data[key] = b
 		}
 	}
+
 	return data, nil
 }
 
-func (r *Redis) RESTORE(db int, data map[string][]byte) (err error) {
+func (r *Redis) RESTORE(data map[string][]byte) (err error) {
 	var conn = r.pool.Get()
 	defer conn.Close()
-	if err = conn.Send("SELECT", db); err != nil {
-		return errors.WithStack(err)
-	}
 
 	for k, v := range data {
 		// 0是ttl
