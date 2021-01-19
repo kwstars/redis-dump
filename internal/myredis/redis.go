@@ -79,7 +79,7 @@ type SCANResult struct {
 	Err  error
 }
 
-func (r *Redis) Scan(ctx context.Context, match string, count int) <-chan SCANResult {
+func (r *Redis) SCAN(ctx context.Context, match string, count int) <-chan SCANResult {
 	var results = make(chan SCANResult)
 	go func() {
 		defer close(results)
@@ -147,4 +147,49 @@ func (r *Redis) RESTORE(data map[string][]byte) (err error) {
 		}
 	}
 	return
+}
+
+func (r *Redis) EXIST(key string) (exist bool, err error) {
+	var conn = r.pool.Get()
+	defer conn.Close()
+
+	if exist, err = redis.Bool(conn.Do("EXISTS", key)); err != nil {
+		return false, err
+	}
+
+	return exist, nil
+}
+
+func (r *Redis) TYPE(key string) (dataType string, err error) {
+	var conn = r.pool.Get()
+	defer conn.Close()
+
+	if dataType, err = redis.String(conn.Do("TYPE", key)); err != nil {
+		return "", err
+	} else {
+		return dataType, nil
+	}
+}
+
+func (r *Redis) SADD(key string, data []string) (err error) {
+	var conn = r.pool.Get()
+	defer conn.Close()
+	lenght := len(data)
+
+	for _, v := range data {
+		if err := conn.Send("SADD", key, v); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+
+	if err := conn.Flush(); err != nil {
+		return errors.WithStack(err)
+	}
+
+	for i := 0; i < lenght; i++ {
+		if _, err := conn.Receive(); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+	return nil
 }

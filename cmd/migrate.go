@@ -91,7 +91,7 @@ to quickly create a Cobra application.`,
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		for v := range sRedis.Scan(ctx, "*", 1000) {
+		for v := range sRedis.SCAN(ctx, "*", 1000) {
 			if v.Err != nil {
 				log.Printf("%+v", v.Err)
 				return
